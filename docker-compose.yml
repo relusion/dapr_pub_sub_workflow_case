@@ -1,0 +1,76 @@
+services:  
+  consumer-app:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    volumes:
+      - ./consumer:/app
+    ports:
+      - "6000:6000"    
+      - "50001:50001"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - APPINSIGHTS_INSTRUMENTATIONKEY=00000000-0000-0000-0000-000000000000
+
+  dapr-sidecar:
+    image: daprio/daprd:latest
+    command: ["./daprd",
+     "-app-id", "consumer-app",
+     "-app-port", "6000",
+     "-app-protocol", "grpc",
+     "--placement-host-address", "placement:50006", # Dapr's placement service can be reach via the docker DNS entry
+     "-dapr-grpc-port", "50001",     
+     "--resources-path", "./components",
+     "-log-level", "debug"]
+    volumes:
+      - "./consumer/components/:/components"
+    depends_on:
+      consumer-app:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    network_mode: "service:consumer-app"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ./scripts/rabbitmq-config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./scripts/rabbitmq-config/definitions.json:/etc/rabbitmq/definitions.json:ro
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_CONFIG_FILE: /etc/rabbitmq/rabbitmq.conf      
+      #RABBITMQ_LOAD_DEFINITIONS: /etc/rabbitmq/definitions.json
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  placement:
+    image: daprio/dapr
+    command: ["./placement", "-port", "50006"]
+    ports:
+      - "50006:50006"
